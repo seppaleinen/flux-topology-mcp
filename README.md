@@ -1,5 +1,7 @@
 # flux-topology
 
+[![skills.sh](https://skills.sh/b/seppaleinen/flux-topology-mcp)](https://skills.sh/seppaleinen/flux-topology-mcp)
+
 An MCP server that builds a dependency and topology graph of a Kubernetes/FluxCD
 GitOps repository by static analysis, so AI agents can reason about service
 relationships without cluster access.
@@ -28,6 +30,19 @@ Add to your `opencode.json`:
 
 The server reads from `flux/` in the working directory. Run opencode from your
 GitOps repo root.
+
+## Agent Skill
+
+The bundled agent skill teaches AI agents when and how to use the MCP tools.
+Install it from [skills.sh](https://skills.sh/seppaleinen/flux-topology-mcp):
+
+```bash
+npx skills add seppaleinen/flux-topology-mcp
+```
+
+This gives your agent a workflow: start with `fluxtop_map` for an overview,
+drill down with `fluxtop_app_card`, check blast radius with `fluxtop_trace`,
+and find shared references with `fluxtop_find_refs`.
 
 ## Tools
 
@@ -62,7 +77,7 @@ No cluster access required. Pure static analysis of YAML files.
 ## Development
 
 ```bash
-git clone https://github.com/daveri/flux-topology-mcp.git
+git clone https://github.com/seppaleinen/flux-topology-mcp.git
 cd flux-topology-mcp
 pip install -e ".[dev]"
 pytest
