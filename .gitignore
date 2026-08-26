@@ -1,0 +1,14 @@
+# Build
+dist/
+build/
+*.egg-info/
+
+# Python
+__pycache__/
+*.pyc
+
+# Test
+.pytest_cache/
+
+# Flux Topology cache (regenerable)
+.fluxtop/
