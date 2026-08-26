@@ -1,3 +1,8 @@
+---
+name: flux-topology
+description: Navigate and reason about FluxCD GitOps repository topology — discover apps, trace dependencies, find blast radius, and search cross-references.
+---
+
 # flux-topology
 
 An MCP server that builds a dependency and topology graph of a FluxCD GitOps repository by static analysis.
