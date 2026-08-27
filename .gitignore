@@ -12,3 +12,6 @@ __pycache__/
 
 # Flux Topology cache (regenerable)
 .fluxtop/
+
+# graft's local graph cache — regenerable, not committed (run `graft build`).
+/graft/
