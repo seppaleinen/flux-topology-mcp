@@ -1,8 +1,8 @@
 # Flux Topology
 
-An MCP server that builds a dependency and topology graph of a Kubernetes/FluxCD
-GitOps repository by static analysis, so AI agents can reason about service
-relationships without cluster access.
+A CLI + agent skill that builds a dependency and topology graph of a
+Kubernetes/FluxCD GitOps repository by static analysis, so AI agents can
+reason about service relationships without cluster access.
 
 ## Language
 

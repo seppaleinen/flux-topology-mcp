@@ -5,7 +5,7 @@ description: Navigate and reason about FluxCD GitOps repository topology — dis
 
 # flux-topology
 
-An MCP server that builds a dependency and topology graph of a FluxCD GitOps repository by static analysis.
+A CLI + skill that builds a dependency and topology graph of a FluxCD GitOps repository by static analysis.
 
 ## When to use
 
@@ -17,48 +17,61 @@ An MCP server that builds a dependency and topology graph of a FluxCD GitOps rep
 
 ## Prerequisites
 
-The `flux-topology` MCP server must be installed and configured. See the [README](../../README.md) for setup instructions.
+```bash
+pip install flux-topology
+npx skills add seppaleinen/flux-topology-mcp   # this skill
+```
 
-## How it works
+No MCP server is required — `flux-topology` is a plain CLI.
 
-The server analyzes YAML files under `flux/` in the working directory. The topology cache (`.fluxtop/`) rebuilds automatically on every query — no manual refresh needed.
+## READ FIRST (no binary needed)
 
-## Tools
+Prefer the cache files directly — they are greppable and cheap:
 
-### Start here: `fluxtop_map`
+1. **`.fluxtop/apps/*.md`** — one human-readable markdown card per App
+   (workloads, services, ingress hosts, depends-on/referenced-by, warnings).
+   Grep or open these for per-app detail.
+2. **`.fluxtop/wiring.json`** — the machine-readable graph. Use targeted
+   `jq` queries (e.g. `jq '.apps[].id' .fluxtop/wiring.json`) as needed.
+   **NEVER dump the whole file** — it is large and expensive.
 
-Always call this first. Returns an overview of all domains, apps, edge counts, and warnings.
+## Computed queries (binary)
 
-### Drill down: `fluxtop_app_card`
+Use the CLI only for queries that need computation over the whole graph:
 
-Get the full card for one app: workloads, services, ingress hosts, edges in both directions, and warnings.
+| Command | Purpose |
+|---|---|
+| `flux-topology map` | Overview: domains, hub apps by edge count, warnings |
+| `flux-topology trace <app>` | BFS blast radius with typed edges |
+| `flux-topology find-refs <pattern>` | Regex search for references across all apps |
+| `flux-topology app-card <app>` | Full card for one app |
+| `flux-topology check-freshness` | Check if the cache is fresh/stale/absent (never rebuilds) |
 
-### Blast radius: `fluxtop_trace`
+Trace options: `--direction out|in|both` (default `out`) and `--depth N`
+(default 5). All commands accept `[dir]` (default `.`) and `--json` for
+machine-readable output.
 
-BFS trace from any app with typed edges. Use before deleting or modifying an app.
+## Build on change
 
-- `direction="out"` — what this app depends on
-- `direction="in"` — what depends on this app
-- `direction="both"` — full blast radius
-- `depth` — max hops (default 5)
+```bash
+flux-topology build [dir] [--force]
+```
 
-### Find references: `fluxtop_find_refs`
+Run `build` when the repo was moved, after YAML changes, or when a STALE
+notice appears. Query commands auto-build only when there is **no** cache at
+all; a **STALE** cache is surfaced as a notice with exit code 1 — rebuild
+before trusting the results.
 
-Regex search across all apps. Use when renaming or removing shared resources (charts, images, configs).
+## Exit codes
 
-### Health check: `fluxtop_check_freshness`
-
-Check if the cache is up to date. Normally not needed — cache rebuilds automatically.
+- `0` — fresh / found
+- `1` — stale, not-found, or invalid input
+- `2` — usage error (argparse)
+- `3` — no cache (`check-freshness` only)
 
 ## Typical workflow
 
-```
-1. fluxtop_map          → see the landscape
-2. fluxtop_app_card     → inspect a specific app
-3. fluxtop_trace        → understand dependencies before changes
-4. fluxtop_find_refs    → find all consumers of a shared resource
-```
-
-## Cache
-
-The cache lives in `.fluxtop/` and is gitignored. It rebuilds automatically when YAML files change — agents never need to trigger a rebuild manually.
+1. `flux-topology map` → see the landscape
+2. `flux-topology app-card <app>` → inspect a specific app
+3. `flux-topology trace <app>` → understand dependencies before changes
+4. `flux-topology find-refs <pattern>` → find all consumers of a shared resource

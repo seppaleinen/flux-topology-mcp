@@ -1,12 +1,12 @@
 [project]
 name = "flux-topology"
-version = "0.2.4"
-description = "Static dependency/topology graph of a FluxCD GitOps repo, exposed to AI agents over MCP"
+version = "0.3.0"
+description = "Static dependency/topology graph of a FluxCD GitOps repo, exposed to AI agents on demand via a CLI and skill."
 readme = "README.md"
 requires-python = ">=3.12"
 license = { text = "MIT" }
 authors = [{ name = "Daveri" }]
-keywords = ["fluxcd", "gitops", "kubernetes", "mcp", "topology", "dependency-graph"]
+keywords = ["fluxcd", "gitops", "kubernetes", "topology", "dependency-graph"]
 classifiers = [
     "Development Status :: 3 - Alpha",
     "Intended Audience :: Developers",
@@ -19,7 +19,6 @@ classifiers = [
     "Topic :: System :: Systems Administration",
 ]
 dependencies = [
-    "mcp>=1.2.0",
     "PyYAML>=6.0",
 ]
 

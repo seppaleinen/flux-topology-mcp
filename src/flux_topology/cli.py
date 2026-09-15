@@ -1,63 +1,76 @@
-"""Console entry point: flux-topology build [dir] and flux-topology mcp [dir]."""
+"""Console entry point: flux-topology build/map/trace/find-refs/app-card/check-freshness."""
 
 from __future__ import annotations
 
 import argparse
 import sys
-from pathlib import Path
+
+from .cache import is_cache_fresh
+from .query import (
+    build_topology,
+    query_app_card,
+    query_check_freshness,
+    query_find_refs,
+    query_map,
+    query_trace,
+    resolve_flux_root,
+)
 
 
-def cmd_build(args: argparse.Namespace) -> None:
+def cmd_build(args: argparse.Namespace) -> int:
     """Build the topology cache."""
-    from .cache import compute_fingerprint, write_cache, is_cache_fresh
-    from .models import WiringGraph
-    from .discovery import discover_apps
-    from .extract import extract_app_data
-    from .edges import resolve_edges, build_wiring_graph
+    flux_root = resolve_flux_root(args.directory)
 
-    flux_root = Path(args.directory).resolve()
-    flux_dir = flux_root / "flux"
-
-    if not flux_dir.is_dir():
+    if not flux_root.is_dir():
         print(f"Error: flux/ directory not found in {flux_root}", file=sys.stderr)
-        sys.exit(1)
+        return 1
 
-    if is_cache_fresh(flux_dir):
-        print(f"Cache is fresh for {flux_dir}. Use --force to rebuild.")
-        return
+    if not args.force and is_cache_fresh(flux_root):
+        print(f"Cache is fresh for {flux_root}. Use --force to rebuild.")
+        return 0
 
     print(f"Building topology for {flux_root}...")
-
-    # Discover apps
-    apps = discover_apps(flux_dir)
-    print(f"  Discovered {len(apps)} apps")
-
-    # Extract data for each app
-    for app in apps:
-        extract_app_data(app, flux_dir)
-
-    # Resolve edges
-    edges, warnings = resolve_edges(apps, flux_dir)
-    print(f"  Resolved {len(edges)} edges, {len(warnings)} warnings")
-
-    # Build graph
-    fingerprint = compute_fingerprint(flux_dir)
-    graph = build_wiring_graph(apps, edges, warnings, flux_dir, fingerprint)
-
-    # Write cache
-    write_cache(flux_dir, apps, edges, warnings, graph)
-    print(f"  Cache written to {flux_dir}/.fluxtop/")
+    graph = build_topology(flux_root, progress=True)
+    print(f"  Cache written to {flux_root}/.fluxtop/")
     print(f"  {len(graph.domains)} domains, {len(graph.apps)} apps")
+    return 0
 
 
-def cmd_mcp(args: argparse.Namespace) -> None:
-    """Run the MCP server."""
-    from .server import run_server
+def _cmd_map(args: argparse.Namespace) -> int:
+    return query_map(resolve_flux_root(args.directory), json_out=args.json_out)
 
-    # Set working directory for MCP tools
-    import os
-    os.chdir(args.directory)
-    run_server()
+
+def _cmd_trace(args: argparse.Namespace) -> int:
+    return query_trace(
+        resolve_flux_root(args.directory),
+        args.app_id,
+        direction=args.direction,
+        depth=args.depth,
+        json_out=args.json_out,
+    )
+
+
+def _cmd_find_refs(args: argparse.Namespace) -> int:
+    return query_find_refs(
+        resolve_flux_root(args.directory),
+        args.pattern,
+        json_out=args.json_out,
+    )
+
+
+def _cmd_app_card(args: argparse.Namespace) -> int:
+    return query_app_card(
+        resolve_flux_root(args.directory),
+        args.app_id,
+        json_out=args.json_out,
+    )
+
+
+def _cmd_check_freshness(args: argparse.Namespace) -> int:
+    return query_check_freshness(
+        resolve_flux_root(args.directory),
+        json_out=args.json_out,
+    )
 
 
 def main() -> None:
@@ -79,28 +92,106 @@ def main() -> None:
         default=".",
         help="Repository root directory (default: current directory)",
     )
-
-    # mcp subcommand
-    mcp_parser = subparsers.add_parser(
-        "mcp",
-        help="Run the MCP server over stdio",
+    build_parser.add_argument(
+        "--force",
+        action="store_true",
+        help="Rebuild even if the cache is fresh",
     )
-    mcp_parser.add_argument(
+    build_parser.set_defaults(func=cmd_build)
+
+    # map subcommand
+    map_parser = subparsers.add_parser(
+        "map",
+        help="Map topology: domains, hub apps by edge count, warnings summary",
+    )
+    map_parser.add_argument(
         "directory",
         nargs="?",
         default=".",
         help="Repository root directory (default: current directory)",
     )
+    map_parser.add_argument("--json", action="store_true", dest="json_out",
+                           help="Emit JSON instead of markdown")
+    map_parser.set_defaults(func=_cmd_map)
+
+    # trace subcommand
+    trace_parser = subparsers.add_parser(
+        "trace",
+        help="BFS trace from an app: blast radius with typed edges",
+    )
+    trace_parser.add_argument("app_id", help="App ID to trace from")
+    trace_parser.add_argument(
+        "directory",
+        nargs="?",
+        default=".",
+        help="Repository root directory (default: current directory)",
+    )
+    trace_parser.add_argument(
+        "--direction",
+        choices=["out", "in", "both"],
+        default="out",
+        help="'out' = what this app depends on, 'in' = what depends on this app, "
+             "'both' = both (default: out)",
+    )
+    trace_parser.add_argument(
+        "--depth",
+        type=int,
+        default=5,
+        help="Max BFS depth (default: 5)",
+    )
+    trace_parser.add_argument("--json", action="store_true", dest="json_out",
+                           help="Emit JSON instead of markdown")
+    trace_parser.set_defaults(func=_cmd_trace)
+
+    # find-refs subcommand
+    find_refs_parser = subparsers.add_parser(
+        "find-refs",
+        help="Search for references matching a regex pattern, grouped by app",
+    )
+    find_refs_parser.add_argument("pattern", help="Regex pattern to match against refs")
+    find_refs_parser.add_argument(
+        "directory",
+        nargs="?",
+        default=".",
+        help="Repository root directory (default: current directory)",
+    )
+    find_refs_parser.add_argument("--json", action="store_true", dest="json_out",
+                                 help="Emit JSON instead of markdown")
+    find_refs_parser.set_defaults(func=_cmd_find_refs)
+
+    # app-card subcommand
+    app_card_parser = subparsers.add_parser(
+        "app-card",
+        help="Get the app card: markdown + structured data for one app",
+    )
+    app_card_parser.add_argument("app_id", help="App ID to show")
+    app_card_parser.add_argument(
+        "directory",
+        nargs="?",
+        default=".",
+        help="Repository root directory (default: current directory)",
+    )
+    app_card_parser.add_argument("--json", action="store_true", dest="json_out",
+                                help="Emit JSON instead of markdown")
+    app_card_parser.set_defaults(func=_cmd_app_card)
+
+    # check-freshness subcommand
+    check_freshness_parser = subparsers.add_parser(
+        "check-freshness",
+        help="Check if the topology cache is fresh or stale (without rebuild)",
+    )
+    check_freshness_parser.add_argument(
+        "directory",
+        nargs="?",
+        default=".",
+        help="Repository root directory (default: current directory)",
+    )
+    check_freshness_parser.add_argument("--json", action="store_true", dest="json_out",
+                                       help="Emit JSON instead of markdown")
+    check_freshness_parser.set_defaults(func=_cmd_check_freshness)
 
     args = parser.parse_args()
-
-    if args.command == "build":
-        cmd_build(args)
-    elif args.command == "mcp":
-        cmd_mcp(args)
-    else:
-        parser.print_help()
-        sys.exit(1)
+    raise SystemExit(args.func(args))
 
 
 if __name__ == "__main__":

@@ -129,3 +129,21 @@ def read_wiring_graph(flux_root: Path) -> WiringGraph | None:
         return WiringGraph.from_dict(data)
     except (OSError, json.JSONDecodeError):
         return None
+
+
+def freshness_state(flux_root: Path) -> str:
+    """Return one of NO_CACHE / STALE / FRESH / CORRUPT."""
+    # 1. wiring.json missing -> "NO_CACHE"
+    if not (flux_root / FLUXTOP_DIR / WIRING_FILE).exists():
+        return "NO_CACHE"
+    # 2. cached fingerprint missing (read_cached_fingerprint None) -> "CORRUPT"
+    if read_cached_fingerprint(flux_root) is None:
+        return "CORRUPT"
+    # 3. fingerprint_matches(flux_root) is False -> "STALE"
+    if not fingerprint_matches(flux_root):
+        return "STALE"
+    # 4. read_wiring_graph(flux_root) is None -> "CORRUPT"
+    if read_wiring_graph(flux_root) is None:
+        return "CORRUPT"
+    # 5. else -> "FRESH"
+    return "FRESH"

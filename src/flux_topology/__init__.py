@@ -1,6 +1,6 @@
 """flux-topology: static topology graphs for FluxCD GitOps repos."""
 
-__version__ = "0.1.0"
+__version__ = "0.3.0"
 
 DOMAIN_VOCABULARY = {
     "App": "leafmost directory owning deployment intent; node of the inter-App graph",
