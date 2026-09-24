@@ -1,6 +1,6 @@
 [project]
 name = "flux-topology"
-version = "0.3.2"
+version = "0.3.3"
 description = "Static dependency/topology graph of a FluxCD GitOps repo, exposed to AI agents on demand via a CLI and skill."
 readme = "README.md"
 requires-python = ">=3.12"
