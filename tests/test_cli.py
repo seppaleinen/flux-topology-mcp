@@ -19,11 +19,14 @@ CLI = [sys.executable, "-m", "flux_topology.cli"]
 #   flux/
 #     apps/
 #       backend/backend-helmrelease.yaml
+#       backend/service.yaml        -> kind: Service (name=backend, ns=apps)
 #       frontend/frontend-helmrelease.yaml
-#       frontend/values.yaml   -> contains a dns-full ref
+#       frontend/values.yaml        -> contains a resolvable + a broken dns ref
 # frontend dependsOn backend -> 1 edge; backend is a separate app.
-# The dns-full ref (backend.apps.svc.cluster.local) is unresolved, producing a
-# warning; external .labb.site hosts produce more warnings.
+# The dns-full ref "backend.apps.svc.cluster.local" resolves to apps/backend
+# (exact Service match + name/namespace fallback) -> 1 dns-ref edge.
+# "nonexistent.apps.svc.cluster.local" is genuinely broken -> 1 warning.
+# External .labb.site hosts are self-references (no edge, no warning).
 
 BACKEND_HR = """\
 apiVersion: helm.toolkit.fluxcd.io/v2beta1
@@ -35,6 +38,19 @@ spec:
   values:
     ingress:
       host: backend.labb.site
+"""
+
+BACKEND_SERVICE = """\
+apiVersion: v1
+kind: Service
+metadata:
+  name: backend
+  namespace: apps
+spec:
+  selector:
+    app: backend
+  ports:
+    - port: 80
 """
 
 FRONTEND_HR = """\
@@ -51,7 +67,10 @@ spec:
       host: frontend.labb.site
 """
 
-FRONTEND_VALUES = "backend: backend.apps.svc.cluster.local\n"
+FRONTEND_VALUES = (
+    "backend: backend.apps.svc.cluster.local\n"
+    "missing: nonexistent.apps.svc.cluster.local\n"
+)
 
 
 @pytest.fixture
@@ -64,6 +83,7 @@ def flux_tree(tmp_path: Path) -> Path:
     (frontend / "frontend-helmrelease.yaml").write_text(FRONTEND_HR)
     (frontend / "values.yaml").write_text(FRONTEND_VALUES)
     (backend / "backend-helmrelease.yaml").write_text(BACKEND_HR)
+    (backend / "service.yaml").write_text(BACKEND_SERVICE)
     return tmp_path
 
 
@@ -121,7 +141,7 @@ def test_map_human_after_build(flux_tree: Path):
     assert result.returncode == 0
     assert "# Flux Topology Map" in result.stdout
     assert "**Apps**: 2" in result.stdout
-    assert "**Edges**: 1" in result.stdout
+    assert "**Edges**: 2" in result.stdout
     assert "apps/frontend" in result.stdout
 
 
@@ -132,7 +152,7 @@ def test_map_json(flux_tree: Path):
     data = json.loads(result.stdout)
     assert data["schema_version"] == 1
     assert data["app_count"] == 2
-    assert data["edge_count"] == 1
+    assert data["edge_count"] == 2
     assert data["root"].endswith("flux")
     assert data["built_at"]
     assert data["fingerprint"]
@@ -141,8 +161,8 @@ def test_map_json(flux_tree: Path):
     assert data["domains"][0]["app_count"] == 2
     assert len(data["domains"][0]["apps"]) == 2
     hub = {h["app_id"]: h for h in data["hub_apps"]}
-    assert hub["apps/frontend"]["out_degree"] == 1
-    assert hub["apps/backend"]["in_degree"] == 1
+    assert hub["apps/frontend"]["out_degree"] == 2
+    assert hub["apps/backend"]["in_degree"] == 2
     assert len(data["warnings"]) >= 1
 
 

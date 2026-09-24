@@ -25,8 +25,13 @@ DNS_FULL_RE = re.compile(r"\w[\w.-]*\.svc\.cluster\.local")
 EXTERNAL_HOST_RE = re.compile(r"[\w.-]+\.labb\.site")
 GENERIC_HOST_RE = re.compile(r"\b[\w.-]+\.[\w.-]+\.[\w.-]+\b")
 
-# Ingress host extraction patterns
-INGRESSROUTE_HOST_RE = re.compile(r"host:\s*['\"]?([^'\"\s,]+)['\"]?")
+# Ingress host extraction patterns.
+# Traefik IngressRoute `match` fields use the form `Host(\`...\`)`, which may
+# include wildcards (e.g. `Host(\`*.labb.site\`)`). Capture both that form and
+# the plain `host:` literal so wildcard hosts are not silently dropped.
+INGRESSROUTE_HOST_RE = re.compile(
+    r"Host\(`([^`]+)`\)|host:\s*['\"]?([^'\"\s,]+)['\"]?"
+)
 HOSTNAME_RE = re.compile(r"hostname:\s*['\"]?([^'\"\s,]+)['\"]?")
 
 
@@ -266,8 +271,9 @@ def _extract_ingress(app: App, doc: dict) -> None:
                 if isinstance(match, str):
                     m = INGRESSROUTE_HOST_RE.search(match)
                     if m:
-                        host = m.group(1)
-                        if host not in app.ingress_hosts:
+                        # group(1): Host(`...`) form; group(2): host: literal
+                        host = m.group(1) or m.group(2)
+                        if host and host not in app.ingress_hosts:
                             app.ingress_hosts.append(host)
 
     elif kind == "Ingress":

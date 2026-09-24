@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from dataclasses import dataclass, field
 from pathlib import Path
 
 from .models import App, Edge, Warning, WiringGraph, FluxObject
@@ -35,7 +36,6 @@ def resolve_edges(apps: list[App], flux_root: Path) -> tuple[list[Edge], list[Wa
     Returns (edges, warnings).
     """
     lookup = build_lookup_index(apps)
-    app_by_id = {a.id: a for a in apps}
     edges: list[Edge] = []
     warnings: list[Warning] = []
 
@@ -83,11 +83,15 @@ def resolve_edges(apps: list[App], flux_root: Path) -> tuple[list[Edge], list[Wa
                             detail=f"dependsOn '{dep_name}' not found in flux/ tree",
                         ))
 
+    # Build a resolution index once per call (exact Service index, fallback
+    # name+namespace sets, exact + wildcard ingress indices).
+    index = build_resolution_index(apps)
+
     # Resolve dns-ref edges
     for app in apps:
         for ref in app.refs:
             if ref.kind == "dns-full":
-                target_id = _resolve_dns_ref(ref.raw, apps, app.id)
+                target_id = _resolve_dns_ref(ref.raw, index)
                 if target_id:
                     ref.resolved_to = target_id
                     if target_id != app.id:
@@ -108,7 +112,7 @@ def resolve_edges(apps: list[App], flux_root: Path) -> tuple[list[Edge], list[Wa
     for app in apps:
         for ref in app.refs:
             if ref.kind == "external":
-                target_id = _resolve_external_ref(ref.raw, apps, app.id)
+                target_id = _resolve_external_ref(ref.raw, index)
                 if target_id:
                     ref.resolved_to = target_id
                     if target_id != app.id:
@@ -146,18 +150,106 @@ def _read_yaml_docs(path: Path) -> list[dict]:
         return []
 
 
-def _resolve_dns_ref(fqdn: str, apps: list[App], caller_id: str) -> str | None:
+@dataclass
+class ResolutionIndex:
+    """Precomputed index for DNS / external reference resolution.
+
+    Built once per ``resolve_edges()`` call so that the (potentially large)
+    app list is not re-scanned for every reference.
+    """
+
+    # Exact Service match: (service_name, namespace) -> app_id
+    service_index: dict[tuple[str, str], str] = field(default_factory=dict)
+    # Fallback: app_id -> set of candidate service names (app.name, HR names,
+    # workload names). Used when no exact Service was extracted.
+    app_service_names: dict[str, set[str]] = field(default_factory=dict)
+    # Fallback: app_id -> set of candidate namespaces (HR metadata.namespace,
+    # Service namespaces, app.domain). The domain is the fleet-infra default
+    # namespace and is added as a last-resort fallback.
+    app_namespaces: dict[str, set[str]] = field(default_factory=dict)
+    # Exact ingress host -> app_id
+    ingress_exact: dict[str, str] = field(default_factory=dict)
+    # Wildcard suffix (e.g. "labb.site" from "*.labb.site") -> app_id
+    ingress_wildcard: dict[str, str] = field(default_factory=dict)
+
+
+def build_resolution_index(apps: list[App]) -> ResolutionIndex:
+    """Build a ResolutionIndex from the extracted app data.
+
+    The index is conservative: it only records facts that were actually
+    extracted from the repo (Service manifests, HelmRelease metadata,
+    ingress hosts). It never renders Helm templates or queries a cluster.
+    """
+    index = ResolutionIndex()
+
+    for app in apps:
+        # Candidate service names for fallback resolution.
+        names: set[str] = set()
+        names.add(app.name)
+        for fo in app.flux_objects:
+            if fo.kind in ("HelmRelease", "Kustomization"):
+                names.add(fo.name)
+        for wl in app.workloads:
+            names.add(wl.name)
+        index.app_service_names[app.id] = names
+
+        # Candidate namespaces: HR metadata.namespace + Service namespaces +
+        # the app's domain (fleet-infra default namespace).
+        namespaces: set[str] = set()
+        for fo in app.flux_objects:
+            if fo.namespace:
+                namespaces.add(fo.namespace)
+        for svc in app.services:
+            if svc.namespace:
+                namespaces.add(svc.namespace)
+        namespaces.add(app.domain)
+        index.app_namespaces[app.id] = namespaces
+
+        # Exact Service index.
+        for svc in app.services:
+            ns = svc.namespace if svc.namespace else "<unknown>"
+            # First match wins; if a Service name is duplicated across apps
+            # the earlier app in the list takes precedence.
+            key = (svc.name, ns)
+            if key not in index.service_index:
+                index.service_index[key] = app.id
+
+        # Ingress hosts: exact vs wildcard.
+        for h in app.ingress_hosts:
+            if h.startswith("*."):
+                suffix = h[2:]
+                if suffix and suffix not in index.ingress_wildcard:
+                    index.ingress_wildcard[suffix] = app.id
+            elif h and h not in index.ingress_exact:
+                index.ingress_exact[h] = app.id
+
+    return index
+
+
+def _resolve_dns_ref(fqdn: str, index: ResolutionIndex) -> str | None:
     """Resolve a DNS FQDN to an app ID.
 
-    FQDN format: service-name.namespace.svc.cluster.local
-    We extract the namespace and find the app whose last path segment matches.
+    FQDN format: ``service-name.namespace.svc.cluster.local``
+
+    Resolution order:
+      1. Exact Service match on ``(service_name, namespace)`` — only succeeds
+         if a ``kind: Service`` manifest was actually extracted for that
+         (name, namespace) pair.
+      2. Fallback: ``service_name`` matches one of the app's known names AND
+         ``namespace`` matches one of the app's known namespaces. This covers
+         fleet-infra where the Kubernetes namespace equals the app's domain
+         (top-level ``flux/`` dir) rather than the app's directory name, and
+         where the Service is defined in Helm values (not extracted).
+
+    Returns the target app id, or ``None`` if unresolvable. A self-reference
+    (target == caller) is a valid resolution — ``resolve_edges`` suppresses
+    the edge and warning for intra-App composition.
     """
-    # Extract namespace from FQDN
     parts = fqdn.split(".")
     if len(parts) < 3:
         return None
 
-    # Find namespace: everything between first label and .svc
+    # Find the "svc" label; the namespace is the label immediately before it.
     svc_idx = None
     for i, p in enumerate(parts):
         if p == "svc":
@@ -166,26 +258,46 @@ def _resolve_dns_ref(fqdn: str, apps: list[App], caller_id: str) -> str | None:
     if svc_idx is None or svc_idx < 2:
         return None
 
+    service_name = parts[0]
     namespace = parts[svc_idx - 1]
 
-    # Find app whose last path segment matches the namespace
-    for app in apps:
-        if app.id == caller_id:
-            continue
-        path_parts = app.path.split("/")
-        if path_parts and path_parts[-1] == namespace:
-            return app.id
+    # 1. Exact Service match.
+    for ns_key in (namespace, "<unknown>"):
+        key = (service_name, ns_key)
+        if key in index.service_index:
+            return index.service_index[key]
+
+    # 2. Fallback: service_name ∈ app's known names AND namespace ∈ app's
+    #    known namespaces (HR namespace, Service namespace, or domain).
+    for app_id, names in index.app_service_names.items():
+        if service_name in names and namespace in index.app_namespaces.get(app_id, set()):
+            return app_id
 
     return None
 
 
-def _resolve_external_ref(host: str, apps: list[App], caller_id: str) -> str | None:
-    """Resolve an external hostname (*.labb.site) to an app by ingress host mapping."""
-    for app in apps:
-        if app.id == caller_id:
-            continue
-        if host in app.ingress_hosts:
-            return app.id
+def _resolve_external_ref(host: str, index: ResolutionIndex) -> str | None:
+    """Resolve an external hostname to an app by ingress host mapping.
+
+    Resolution order:
+      1. Exact host match (including self-references, which return the
+         caller's own app id — ``resolve_edges`` suppresses those).
+      2. Wildcard suffix match (e.g. ``foo.labb.site`` against an app that
+         declares ``*.labb.site``).
+
+    Returns the target app id, or ``None`` if unresolvable.
+    """
+    # 1. Exact match.
+    if host in index.ingress_exact:
+        return index.ingress_exact[host]
+
+    # 2. Wildcard suffix match.
+    for suffix, app_id in index.ingress_wildcard.items():
+        # *.suffix matches foo.suffix, bar.baz.suffix, etc.
+        # but NOT bare "suffix" (apex domain).
+        if host.endswith("." + suffix):
+            return app_id
+
     return None
 
 
