@@ -240,6 +240,12 @@ def _resolve_dns_ref(fqdn: str, index: ResolutionIndex) -> str | None:
          fleet-infra where the Kubernetes namespace equals the app's domain
          (top-level ``flux/`` dir) rather than the app's directory name, and
          where the Service is defined in Helm values (not extracted).
+      3. Legacy fallback: ``namespace`` equals the app's directory name (last
+         path segment of the app id). This covers operator-created Services
+         (e.g. CloudNativePG creates ``postgres-rw`` from a HelmRelease named
+         ``postgres-cluster``) where the service name matches neither the app
+         name nor any HR/workload name, but the namespace still identifies
+         the owning app directory.
 
     Returns the target app id, or ``None`` if unresolvable. A self-reference
     (target == caller) is a valid resolution — ``resolve_edges`` suppresses
@@ -271,6 +277,12 @@ def _resolve_dns_ref(fqdn: str, index: ResolutionIndex) -> str | None:
     #    known namespaces (HR namespace, Service namespace, or domain).
     for app_id, names in index.app_service_names.items():
         if service_name in names and namespace in index.app_namespaces.get(app_id, set()):
+            return app_id
+
+    # 3. Legacy fallback: namespace == app directory name (last path segment
+    #    of the app id). First match in index insertion order wins.
+    for app_id in index.app_service_names:
+        if namespace == app_id.split("/")[-1]:
             return app_id
 
     return None

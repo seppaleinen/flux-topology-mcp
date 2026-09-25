@@ -134,6 +134,133 @@ class TestDNSResolution:
         index = build_resolution_index([])
         assert _resolve_dns_ref("redis.svc.cluster.local", index) is None
 
+    def test_namespace_dir_fallback_postgres(self):
+        """
+        Gap 1 regression: operator-created Service (CloudNativePG creates
+        postgres-rw from HR postgres-cluster) matches neither app.name nor
+        HR name. Legacy namespace==dir fallback must resolve it.
+        """
+        postgres = _make_app(
+            "infrastructure/postgres",
+            name="postgres",
+            domain="infrastructure",
+            flux_objects=[
+                FluxObject(kind="HelmRelease", name="postgres-cluster", namespace="postgres"),
+            ],
+        )
+        other = _make_app(
+            "infrastructure/other",
+            name="other",
+            domain="infrastructure",
+            flux_objects=[
+                FluxObject(kind="HelmRelease", name="other", namespace="other"),
+            ],
+        )
+        apps = [postgres, other]
+        index = build_resolution_index(apps)
+
+        target = _resolve_dns_ref("postgres-rw.postgres.svc.cluster.local", index)
+        assert target == "infrastructure/postgres", f"Expected infrastructure/postgres, got {target}"
+
+    def test_legacy_fallback_self_suppressed(self):
+        """
+        Legacy fallback self-ref (namespace == caller's own dir name) resolves
+        to self; resolve_edges suppresses edge + warning.
+        """
+        monitoring = _make_app(
+            "monitoring/loki",
+            name="loki",
+            domain="monitoring",
+            flux_objects=[
+                FluxObject(kind="HelmRelease", name="loki-stack", namespace="monitoring"),
+            ],
+        )
+        apps = [monitoring]
+        index = build_resolution_index(apps)
+
+        # loki-gateway.monitoring matches no app/workload/HR name, but
+        # namespace 'monitoring' != dir 'loki'... use a matching self case:
+        # daily-digest-api.daily-digest where app dir is daily-digest.
+        digest = _make_app(
+            "apps/daily-digest",
+            name="daily-digest",
+            domain="apps",
+            flux_objects=[
+                FluxObject(kind="HelmRelease", name="digest-api", namespace="daily-digest"),
+            ],
+        )
+        apps2 = [digest]
+        index2 = build_resolution_index(apps2)
+        target = _resolve_dns_ref("daily-digest-api.daily-digest.svc.cluster.local", index2)
+        assert target == "apps/daily-digest", f"Expected apps/daily-digest, got {target}"
+
+        digest.refs.append(Ref(
+            raw="daily-digest-api.daily-digest.svc.cluster.local",
+            kind="dns-full",
+            file="values.yaml",
+        ))
+        edges, warnings = resolve_edges(apps2, Path("/tmp/flux"))
+        assert not [e for e in edges if e.type == "dns-ref"]
+        assert not [w for w in warnings if w.kind == "broken-ref"]
+        assert digest.refs[0].resolved_to == "apps/daily-digest"
+
+    def test_unmodeled_service_stays_broken(self):
+        """
+        Genuinely unmodeled service (no Service manifest, no name match,
+        no dir match) must remain unresolvable → broken-ref.
+        """
+        stipendiatet = _make_app(
+            "stipendiatet/backend",
+            name="backend",
+            domain="stipendiatet",
+            flux_objects=[
+                FluxObject(kind="HelmRelease", name="backend", namespace="stipendiatet"),
+            ],
+        )
+        apps = [stipendiatet]
+        index = build_resolution_index(apps)
+
+        target = _resolve_dns_ref("browserless.stipendiatet.svc.cluster.local", index)
+        assert target is None, f"Expected None (unmodeled), got {target}"
+
+        stipendiatet.refs.append(Ref(
+            raw="browserless.stipendiatet.svc.cluster.local",
+            kind="dns-full",
+            file="values.yaml",
+        ))
+        edges, warnings = resolve_edges(apps, Path("/tmp/flux"))
+        broken = [w for w in warnings if w.kind == "broken-ref"]
+        assert len(broken) == 1
+        assert "browserless.stipendiatet.svc.cluster.local" in broken[0].detail
+
+    def test_named_ingress_block_extraction(self):
+        """
+        Gap 2: bjw-s/common-chart named blocks (ingress.main.hosts[].host)
+        must populate ingress_hosts.
+        """
+        from flux_topology.extract import _extract_ingress_from_helmrelease
+        app = _make_app("ai/agent0", name="agent0", domain="ai")
+        doc = {
+            "spec": {
+                "values": {
+                    "ingress": {
+                        "main": {
+                            "enabled": True,
+                            "hosts": [
+                                {"host": "agentzero.labb.site"},
+                                {"host": "agent-code.labb.site"},
+                            ],
+                        },
+                        "className": "traefik",
+                        "annotations": {"foo": "bar"},
+                    }
+                }
+            }
+        }
+        _extract_ingress_from_helmrelease(app, doc)
+        assert "agentzero.labb.site" in app.ingress_hosts
+        assert "agent-code.labb.site" in app.ingress_hosts
+
 
 class TestExternalResolution:
     """Tests for _resolve_external_ref behavior via ResolutionIndex."""

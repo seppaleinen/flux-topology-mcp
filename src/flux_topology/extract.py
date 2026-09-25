@@ -201,6 +201,38 @@ def _extract_ingress_from_helmrelease(app: App, doc: dict) -> None:
         if isinstance(g_host, str) and g_host and g_host not in app.ingress_hosts:
             app.ingress_hosts.append(g_host)
 
+    # Named ingress blocks (bjw-s/common-chart style, one level deep):
+    #   ingress:
+    #     main:
+    #       enabled: true
+    #       hosts:
+    #         - host: foo.labb.site
+    # Skip non-dict values (enabled, className, annotations, etc.).
+    for sub in ingress.values():
+        if not isinstance(sub, dict):
+            continue
+        _extract_hosts_from_ingress_block(app, sub)
+
+
+def _extract_hosts_from_ingress_block(app: App, block: dict) -> None:
+    """Extract host/hostname/hosts[].host/hosts[].hostname from one ingress sub-block."""
+    host = block.get("host", "")
+    if isinstance(host, str) and host and host not in app.ingress_hosts:
+        app.ingress_hosts.append(host)
+
+    hostname = block.get("hostname", "")
+    if isinstance(hostname, str) and hostname and hostname not in app.ingress_hosts:
+        app.ingress_hosts.append(hostname)
+
+    hosts_list = block.get("hosts", [])
+    if isinstance(hosts_list, list):
+        for h in hosts_list:
+            if isinstance(h, dict):
+                for key in ("host", "hostname"):
+                    val = h.get(key, "")
+                    if isinstance(val, str) and val and val not in app.ingress_hosts:
+                        app.ingress_hosts.append(val)
+
 
 def _extract_workload_from_raw(app: App, doc: dict) -> None:
     """Extract workloads from raw Kubernetes manifests."""
